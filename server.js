@@ -16,7 +16,7 @@ app.use(express.json());
 // 2. Security: Limit checks to 5 per minute per IP address
 const limiter = rateLimit({
     windowMs: 1 * 60 * 1000, // 1 minute
-    max: 5, 
+    max: 9, 
     message: { error: "Too many requests, please try again later." }
 });
 
