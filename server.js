@@ -2,8 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
-const rateLimit = require('express-rate-limit');
-
+ const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const app = express();
 
 // 1. Allow your Shopify Store to talk to this server
@@ -19,12 +18,10 @@ const limiter = rateLimit({
     windowMs: 30 * 60 * 1000, // 30 minute
     max: 9, // Block after 9 requests
     message: { error: "Too many attempts for this email. Please wait." },
-    validate: { ip: false },
-    // This function tells the limiter to track "IP + Email" instead of just IP
-    keyGenerator: (req) => {
-        // If no email is provided, fall back to just IP to be safe
-        return req.ip + "_" + (req.body.email || '');
-    }
+     // This function tells the limiter to track "IP + Email" instead of just IP
+     keyGenerator: (req) => {
+    return ipKeyGenerator(req) + "_" + (req.body.email || '');
+}
 });
 
 // 3. The API Route
