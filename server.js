@@ -12,7 +12,7 @@ app.use(cors({
 }));
 
 app.use(express.json());
-
+app.set('trust proxy', 1)
 // 2. Security: Limit checks to 5 per minute per IP address
 const limiter = rateLimit({
     windowMs: 1 * 60 * 1000, // 1 minute
