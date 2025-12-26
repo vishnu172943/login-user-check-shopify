@@ -14,10 +14,16 @@ app.use(cors({
 app.use(express.json());
 app.set('trust proxy', 1)
 // 2. Security: Limit checks to 5 per minute per IP address
+ // 2. Security: Limit strictly by IP + Email combination
 const limiter = rateLimit({
-    windowMs: 1 * 60 * 1000, // 1 minute
-    max: 9, 
-    message: { error: "Too many requests, please try again later." }
+    windowMs: 30 * 60 * 1000, // 30 minute
+    max: 9, // Block after 9 requests
+    message: { error: "Too many attempts for this email. Please wait." },
+    // This function tells the limiter to track "IP + Email" instead of just IP
+    keyGenerator: (req) => {
+        // If no email is provided, fall back to just IP to be safe
+        return req.ip + "_" + (req.body.email || '');
+    }
 });
 
 // 3. The API Route
