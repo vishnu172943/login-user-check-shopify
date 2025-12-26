@@ -19,6 +19,7 @@ const limiter = rateLimit({
     windowMs: 30 * 60 * 1000, // 30 minute
     max: 9, // Block after 9 requests
     message: { error: "Too many attempts for this email. Please wait." },
+    validate: { ip: false },
     // This function tells the limiter to track "IP + Email" instead of just IP
     keyGenerator: (req) => {
         // If no email is provided, fall back to just IP to be safe
