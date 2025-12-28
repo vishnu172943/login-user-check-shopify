@@ -73,65 +73,70 @@ app.post('/api/check-user', limiter, async (req, res) => {
  // ---------------------------------------------------------
 //  ROUTE 2: WEBHOOK LISTENER (Updates Phone AND Marketing)
 // ---------------------------------------------------------
+ // ---------------------------------------------------------
+//  ROUTE 2: WEBHOOK LISTENER (Updates Phone AND Marketing)
+// ---------------------------------------------------------
 app.post('/api/webhooks/customer-create', async (req, res) => {
+    // 1. Acknowledge Shopify immediately
     res.status(200).send('Webhook received');
 
     const customer = req.body;
     const customerId = customer.id;
-    const note = customer.note || "";
+    const rawNote = customer.note || "";
 
-    console.log(`🔍 Customer ${customerId} Created. Note: ${JSON.stringify(note)}`);
+    console.log(`🔍 Processing Customer ${customerId}`);
 
-    // 1. Extract Phone
-    const phoneMatch = note.match(/Phone:\s*(\+?\d+)/i);
-    const phoneNumber = phoneMatch ? phoneMatch[1] : null;
+    // 2. Extract Data using robust matching
+    // Matches "Phone: +61..." or "Phone: 04..." even with dashes/spaces
+    const phoneMatch = rawNote.match(/Phone:\s*([+\d\-\(\)\s]+)/i);
+    const phoneNumber = phoneMatch ? phoneMatch[1].trim() : null;
 
-    // 2. Extract Marketing Choice
-    const marketingMatch = note.match(/Marketing:\s*(Yes|No)/i);
+    const marketingMatch = rawNote.match(/Marketing:\s*(Yes|No)/i);
     const shouldSubscribe = marketingMatch && marketingMatch[1].toLowerCase() === 'yes';
 
-    if (phoneNumber || shouldSubscribe) {
-        console.log(`🚀 Updating Customer ${customerId}... Phone: ${phoneNumber}, Marketing: ${shouldSubscribe}`);
+    // 3. CLEANUP LOGIC (The Fix)
+    // We split the note line-by-line and remove the ones we processed
+    const noteLines = rawNote.split('\n');
+    const cleanNote = noteLines.filter(line => {
+        const text = line.trim().toLowerCase();
+        // Remove line if it starts with "phone:" or "marketing:"
+        return !text.startsWith('phone:') && !text.startsWith('marketing:');
+    }).join('\n').trim();
+
+    // 4. Update if we found data OR if we need to clean the note
+    if (phoneNumber || shouldSubscribe || cleanNote !== rawNote) {
+        console.log(`🚀 Updating... Phone: ${phoneNumber}, Marketing: ${shouldSubscribe}`);
+
+        const updatePayload = {
+            customer: {
+                id: customerId,
+                note: cleanNote // Send the cleaned note back
+            }
+        };
+
+        if (phoneNumber) {
+            updatePayload.customer.phone = phoneNumber;
+        }
+
+        if (shouldSubscribe) {
+            updatePayload.customer.email_marketing_consent = {
+                state: "subscribed",
+                opt_in_level: "single_opt_in",
+                consent_updated_at: new Date().toISOString()
+            };
+        }
 
         try {
-            // Prepare the update payload
-            const updatePayload = {
-                customer: {
-                    id: customerId,
-                    // Clean up the note (remove the Phone/Marketing lines so they don't look messy)
-                    note: note.replace(/Phone:.*(\n|$)/i, '').replace(/Marketing:.*(\n|$)/i, '').trim()
-                }
-            };
-
-            // Add Phone if found
-            if (phoneNumber) {
-                updatePayload.customer.phone = phoneNumber;
-            }
-
-            // Add Marketing Consent if "Yes"
-            if (shouldSubscribe) {
-                updatePayload.customer.email_marketing_consent = {
-                    state: "subscribed",
-                    opt_in_level: "single_opt_in",
-                    consent_updated_at: new Date().toISOString()
-                };
-            }
-
-            // Send to Shopify
             await axios.put(`https://${SHOP_URL}/admin/api/2024-01/customers/${customerId}.json`, updatePayload, {
                 headers: {
                     'X-Shopify-Access-Token': ACCESS_TOKEN,
                     'Content-Type': 'application/json'
                 }
             });
-
-            console.log(`✅ Customer ${customerId} updated successfully!`);
-
+            console.log(`✅ Success! Note cleaned and profile updated.`);
         } catch (error) {
             console.error("❌ Update Failed:", error.response ? JSON.stringify(error.response.data) : error.message);
         }
-    } else {
-        console.log("ℹ️ No Phone or Marketing updates needed.");
     }
 });
 
