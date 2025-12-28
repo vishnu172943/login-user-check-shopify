@@ -70,50 +70,68 @@ app.post('/api/check-user', limiter, async (req, res) => {
 //  ROUTE 2: WEBHOOK LISTENER (The New Fixer)
 //  Triggers when a new customer is created in Shopify
 // ---------------------------------------------------------
+ // ---------------------------------------------------------
+//  ROUTE 2: WEBHOOK LISTENER (Updates Phone AND Marketing)
+// ---------------------------------------------------------
 app.post('/api/webhooks/customer-create', async (req, res) => {
-    // 1. Respond to Shopify immediately (200 OK) to prevent timeouts
     res.status(200).send('Webhook received');
 
-    const customer = req.body; // The customer object sent by Shopify
+    const customer = req.body;
     const customerId = customer.id;
     const note = customer.note || "";
 
-    console.log(`New Customer Created: ${customerId}. Checking for Phone in Note...`);
+    console.log(`🔍 Customer ${customerId} Created. Note: ${JSON.stringify(note)}`);
 
-    // 2. Extract Phone from Note
-    // Looking for pattern: "Phone: +614..."
+    // 1. Extract Phone
     const phoneMatch = note.match(/Phone:\s*(\+?\d+)/i);
+    const phoneNumber = phoneMatch ? phoneMatch[1] : null;
 
-    if (phoneMatch && phoneMatch[1]) {
-        const phoneNumber = phoneMatch[1]; // The extracted number
+    // 2. Extract Marketing Choice
+    const marketingMatch = note.match(/Marketing:\s*(Yes|No)/i);
+    const shouldSubscribe = marketingMatch && marketingMatch[1].toLowerCase() === 'yes';
 
-        console.log(`✅ Found phone ${phoneNumber} in note. Moving to official field...`);
+    if (phoneNumber || shouldSubscribe) {
+        console.log(`🚀 Updating Customer ${customerId}... Phone: ${phoneNumber}, Marketing: ${shouldSubscribe}`);
 
         try {
-            // 3. Update Customer via Admin API
-            const updateUrl = `https://${SHOP_URL}/admin/api/2024-01/customers/${customerId}.json`;
-
-            await axios.put(updateUrl, {
+            // Prepare the update payload
+            const updatePayload = {
                 customer: {
                     id: customerId,
-                    phone: phoneNumber, // Save to official field
-                    note: note.replace(phoneMatch[0], '').trim() // Optional: Remove the phone line from the note so it looks clean
+                    // Clean up the note (remove the Phone/Marketing lines so they don't look messy)
+                    note: note.replace(/Phone:.*(\n|$)/i, '').replace(/Marketing:.*(\n|$)/i, '').trim()
                 }
-            }, {
+            };
+
+            // Add Phone if found
+            if (phoneNumber) {
+                updatePayload.customer.phone = phoneNumber;
+            }
+
+            // Add Marketing Consent if "Yes"
+            if (shouldSubscribe) {
+                updatePayload.customer.email_marketing_consent = {
+                    state: "subscribed",
+                    opt_in_level: "single_opt_in",
+                    consent_updated_at: new Date().toISOString()
+                };
+            }
+
+            // Send to Shopify
+            await axios.put(`https://${SHOP_URL}/admin/api/2024-01/customers/${customerId}.json`, updatePayload, {
                 headers: {
                     'X-Shopify-Access-Token': ACCESS_TOKEN,
                     'Content-Type': 'application/json'
                 }
             });
 
-            console.log(`🎉 Success! Customer ${customerId} phone updated to ${phoneNumber}.`);
+            console.log(`✅ Customer ${customerId} updated successfully!`);
 
         } catch (error) {
-            // Log full error details for debugging
-            console.error("❌ Failed to update phone number:", error.response ? JSON.stringify(error.response.data) : error.message);
+            console.error("❌ Update Failed:", error.response ? JSON.stringify(error.response.data) : error.message);
         }
     } else {
-        console.log("ℹ️ No phone number found in notes. Skipping update.");
+        console.log("ℹ️ No Phone or Marketing updates needed.");
     }
 });
 
