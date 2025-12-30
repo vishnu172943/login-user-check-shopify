@@ -79,6 +79,9 @@ app.post('/api/check-user', limiter, async (req, res) => {
   // ---------------------------------------------------------
 //  ROUTE 2: WEBHOOK LISTENER (Save DOB Exactly As Is)
 // ---------------------------------------------------------
+ // ---------------------------------------------------------
+//  ROUTE 2: WEBHOOK LISTENER (Robust Line-by-Line Check)
+// ---------------------------------------------------------
 app.post('/api/webhooks/customer-create', async (req, res) => {
     // 1. Acknowledge Shopify immediately
     res.status(200).send('Webhook received');
@@ -87,33 +90,58 @@ app.post('/api/webhooks/customer-create', async (req, res) => {
     const customerId = customer.id;
     const rawNote = customer.note || "";
 
-    console.log(`🔍 Processing Customer ${customerId}`);
+    console.log(`\n🔍 PROCESSING CUSTOMER: ${customerId}`);
+    console.log(`📄 RAW NOTE:\n${rawNote}`); 
 
-    // --- STEP 1: Extract Data ---
-    const phoneMatch = rawNote.match(/Phone:\s*([+\d\-\(\)\s]+)/i);
-    const phoneNumber = phoneMatch ? phoneMatch[1].trim() : null;
+    // --- VARIABLES TO STORE DATA ---
+    let phoneNumber = null;
+    let shouldSubscribe = false;
+    let dobValue = null;
 
-    const marketingMatch = rawNote.match(/Marketing:\s*(Yes|No)/i);
-    const shouldSubscribe = marketingMatch && marketingMatch[1].toLowerCase() === 'yes';
-
-    // Extract DOB (Capture exactly what is written)
-    const dobMatch = rawNote.match(/DOB:\s*(.+)/i);
-    const dobValue = dobMatch ? dobMatch[1].trim() : null;
-
-    // --- STEP 2: CLEANUP LOGIC ---
-    // Remove Phone, Marketing, and DOB lines from the note
+    // --- STEP 1: LINE-BY-LINE EXTRACTION (Safer) ---
     const noteLines = rawNote.split('\n');
-    const cleanNote = noteLines.filter(line => {
-        const text = line.trim().toLowerCase();
-        return !text.startsWith('phone:') && 
-               !text.startsWith('marketing:') && 
-               !text.startsWith('dob:');
-    }).join('\n').trim();
+    
+    // We will build a "clean" note by keeping lines we don't recognize
+    const cleanLines = [];
 
-    // --- STEP 3: Update Payload ---
+    noteLines.forEach(line => {
+        const text = line.trim();
+        const lowerText = text.toLowerCase();
+
+        // 1. Check for PHONE
+        if (lowerText.startsWith('phone:')) {
+            // Remove "Phone:" and keep the rest
+            phoneNumber = text.substring(6).trim(); 
+        } 
+        // 2. Check for MARKETING
+        else if (lowerText.startsWith('marketing:')) {
+            const val = text.substring(10).trim().toLowerCase();
+            shouldSubscribe = (val === 'yes' || val === 'true');
+        } 
+        // 3. Check for DATE OF BIRTH (or DOB)
+        else if (lowerText.startsWith('date of birth:') || lowerText.startsWith('dob:')) {
+            // Find where the colon is and take everything after it
+            const separatorIndex = text.indexOf(':');
+            if (separatorIndex !== -1) {
+                dobValue = text.substring(separatorIndex + 1).trim();
+            }
+        } 
+        // 4. Keep other lines (like "Title: Mr")
+        else {
+            if (text.length > 0) cleanLines.push(text);
+        }
+    });
+
+    const cleanNote = cleanLines.join('\n');
+
+    console.log(`📊 EXTRACTED DATA:`);
+    console.log(`   > Phone: ${phoneNumber}`);
+    console.log(`   > Marketing: ${shouldSubscribe}`);
+    console.log(`   > DOB: ${dobValue}`);  // <--- Check this in your logs!
+
+    // --- STEP 2: UPDATE SHOPIFY ---
     if (phoneNumber || shouldSubscribe || dobValue || cleanNote !== rawNote) {
-        console.log(`🚀 Updating... Phone: ${phoneNumber}, Marketing: ${shouldSubscribe}, DOB: ${dobValue}`);
-
+        
         const updatePayload = {
             customer: {
                 id: customerId,
@@ -136,9 +164,9 @@ app.post('/api/webhooks/customer-create', async (req, res) => {
             updatePayload.customer.metafields = [
                 {
                     namespace: "custom",
-                    key: "date_of_birthday",
-                    value: dobValue, // Saves exactly "20/05/1990" or "05/1990"
-                    type: "single_line_text_field"
+                    key: "date_of_birthday",      // MUST MATCH EXACTLY in Shopify Admin
+                    value: dobValue,              // Sends "1/3/2003"
+                    type: "single_line_text_field" // MUST BE 'Single line text' in Shopify Admin
                 }
             ];
         }
@@ -150,12 +178,13 @@ app.post('/api/webhooks/customer-create', async (req, res) => {
                     'Content-Type': 'application/json'
                 }
             });
-            console.log(`✅ Success! Customer profile and Metafields updated.`);
+            console.log(`✅ Success! Updated Shopify.`);
         } catch (error) {
             console.error("❌ Update Failed:", error.response ? JSON.stringify(error.response.data) : error.message);
         }
+    } else {
+        console.log("⚠️ No actionable data found in note. Skipping update.");
     }
 });
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
