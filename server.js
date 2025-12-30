@@ -164,7 +164,7 @@ app.post('/api/webhooks/customer-create', async (req, res) => {
             updatePayload.customer.metafields = [
                 {
                     namespace: "custom",
-                    key: "date_of_birthday",      // MUST MATCH EXACTLY in Shopify Admin
+                    key: "date_of_birth",      // MUST MATCH EXACTLY in Shopify Admin
                     value: dobValue,              // Sends "1/3/2003"
                     type: "single_line_text_field" // MUST BE 'Single line text' in Shopify Admin
                 }
