@@ -571,7 +571,17 @@ app.get('/auth/google/callback', async (req, res) => {
                 const token = createSimpleToken(email, tempPassword);
                 return res.redirect(`${redirectBase}/?token=${token}`);
             } else {
-                return res.redirect(`${redirectBase}/?error=manual_login_required`);
+                // return res.redirect(`${redirectBase}/?error=manual_login_required`);
+                    const errorScript = `
+                  <script>
+                    window.opener.postMessage({ 
+                      error: 'manual_login', 
+                      message: 'Your social email is already used for register a TUMI account. Please sign in with your email address and password (right panel) to continue.' 
+                    }, '*');
+                    window.close();
+                  </script>
+                `;
+                return res.send(errorScript);
             }
         } else {
             // REGISTER NEW
