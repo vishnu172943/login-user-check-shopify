@@ -412,19 +412,55 @@ async function updateCustomerPassword(customerId, newPassword) {
 // =====================================================
 
 // ROUTE 1: CHECK EMAIL
+// app.post('/api/check-user', limiter, async (req, res) => {
+//     const { email } = req.body;
+//     if (!email) return res.status(400).json({ error: "Email is required" });
+
+//     try {
+//         console.log(`Checking email: ${email}...`);
+//         const user = await findCustomerByEmail(email); // Re-using helper!
+//         const userExists = !!user;
+
+//         return res.json({ 
+//             exists: userExists,
+//             message: userExists ? "User found" : "User not found"
+//         });
+//     } catch (error) {
+//         console.error("Shopify API Error:", error.message);
+//         return res.status(500).json({ error: "Internal Server Error" });
+//     }
+// });
+// =====================================================
+// ROUTE 1: CHECK EMAIL (UPDATED FOR SOCIAL TAG)
+// =====================================================
 app.post('/api/check-user', limiter, async (req, res) => {
     const { email } = req.body;
     if (!email) return res.status(400).json({ error: "Email is required" });
 
     try {
         console.log(`Checking email: ${email}...`);
-        const user = await findCustomerByEmail(email); // Re-using helper!
+        const user = await findCustomerByEmail(email);
         const userExists = !!user;
+        let isSocial = false;
+
+        // CHECK TAGS IF USER EXISTS
+        if (userExists && user.tags) {
+            // Normalize tags (Handle if it comes as Array or String)
+            const tags = Array.isArray(user.tags) 
+                ? user.tags 
+                : user.tags.split(',').map(t => t.trim());
+
+            if (tags.includes('social-user')) {
+                isSocial = true;
+            }
+        }
 
         return res.json({ 
             exists: userExists,
+            isSocial: isSocial, // <--- New Flag sent to Frontend
             message: userExists ? "User found" : "User not found"
         });
+
     } catch (error) {
         console.error("Shopify API Error:", error.message);
         return res.status(500).json({ error: "Internal Server Error" });
