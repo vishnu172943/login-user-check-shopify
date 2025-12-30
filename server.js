@@ -76,6 +76,9 @@ app.post('/api/check-user', limiter, async (req, res) => {
  // ---------------------------------------------------------
 //  ROUTE 2: WEBHOOK LISTENER (Updates Phone AND Marketing)
 // ---------------------------------------------------------
+  // ---------------------------------------------------------
+//  ROUTE 2: WEBHOOK LISTENER (Save DOB Exactly As Is)
+// ---------------------------------------------------------
 app.post('/api/webhooks/customer-create', async (req, res) => {
     // 1. Acknowledge Shopify immediately
     res.status(200).send('Webhook received');
@@ -86,37 +89,39 @@ app.post('/api/webhooks/customer-create', async (req, res) => {
 
     console.log(`🔍 Processing Customer ${customerId}`);
 
-    // 2. Extract Data using robust matching
-    // Matches "Phone: +61..." or "Phone: 04..." even with dashes/spaces
+    // --- STEP 1: Extract Data ---
     const phoneMatch = rawNote.match(/Phone:\s*([+\d\-\(\)\s]+)/i);
     const phoneNumber = phoneMatch ? phoneMatch[1].trim() : null;
 
     const marketingMatch = rawNote.match(/Marketing:\s*(Yes|No)/i);
     const shouldSubscribe = marketingMatch && marketingMatch[1].toLowerCase() === 'yes';
 
-    // 3. CLEANUP LOGIC (The Fix)
-    // We split the note line-by-line and remove the ones we processed
+    // Extract DOB (Capture exactly what is written)
+    const dobMatch = rawNote.match(/DOB:\s*(.+)/i);
+    const dobValue = dobMatch ? dobMatch[1].trim() : null;
+
+    // --- STEP 2: CLEANUP LOGIC ---
+    // Remove Phone, Marketing, and DOB lines from the note
     const noteLines = rawNote.split('\n');
     const cleanNote = noteLines.filter(line => {
         const text = line.trim().toLowerCase();
-        // Remove line if it starts with "phone:" or "marketing:"
-        return !text.startsWith('phone:') && !text.startsWith('marketing:');
+        return !text.startsWith('phone:') && 
+               !text.startsWith('marketing:') && 
+               !text.startsWith('dob:');
     }).join('\n').trim();
 
-    // 4. Update if we found data OR if we need to clean the note
-    if (phoneNumber || shouldSubscribe || cleanNote !== rawNote) {
-        console.log(`🚀 Updating... Phone: ${phoneNumber}, Marketing: ${shouldSubscribe}`);
+    // --- STEP 3: Update Payload ---
+    if (phoneNumber || shouldSubscribe || dobValue || cleanNote !== rawNote) {
+        console.log(`🚀 Updating... Phone: ${phoneNumber}, Marketing: ${shouldSubscribe}, DOB: ${dobValue}`);
 
         const updatePayload = {
             customer: {
                 id: customerId,
-                note: cleanNote // Send the cleaned note back
+                note: cleanNote
             }
         };
 
-        if (phoneNumber) {
-            updatePayload.customer.phone = phoneNumber;
-        }
+        if (phoneNumber) updatePayload.customer.phone = phoneNumber;
 
         if (shouldSubscribe) {
             updatePayload.customer.email_marketing_consent = {
@@ -126,6 +131,18 @@ app.post('/api/webhooks/customer-create', async (req, res) => {
             };
         }
 
+        // --- METAFIELD UPDATE ---
+        if (dobValue) {
+            updatePayload.customer.metafields = [
+                {
+                    namespace: "custom",
+                    key: "date_of_birthday",
+                    value: dobValue, // Saves exactly "20/05/1990" or "05/1990"
+                    type: "single_line_text_field"
+                }
+            ];
+        }
+
         try {
             await axios.put(`https://${SHOP_URL}/admin/api/2024-01/customers/${customerId}.json`, updatePayload, {
                 headers: {
@@ -133,7 +150,7 @@ app.post('/api/webhooks/customer-create', async (req, res) => {
                     'Content-Type': 'application/json'
                 }
             });
-            console.log(`✅ Success! Note cleaned and profile updated.`);
+            console.log(`✅ Success! Customer profile and Metafields updated.`);
         } catch (error) {
             console.error("❌ Update Failed:", error.response ? JSON.stringify(error.response.data) : error.message);
         }
