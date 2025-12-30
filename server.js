@@ -186,5 +186,115 @@ app.post('/api/webhooks/customer-create', async (req, res) => {
         console.log("⚠️ No actionable data found in note. Skipping update.");
     }
 });
+app.get('/auth/google', (req, res) => {
+    const authorizeUrl = googleClient.generateAuthUrl({
+        access_type: 'offline',
+        scope: ['https://www.googleapis.com/auth/userinfo.email', 'https://www.googleapis.com/auth/userinfo.profile'],
+        prompt: 'select_account'
+    });
+    res.redirect(authorizeUrl);
+});
+
+// ROUTE 4: GOOGLE CALLBACK
+app.get('/auth/google/callback', async (req, res) => {
+    // NOTE: This redirects the user back to your SHOPIFY STORE front-end
+    const redirectBase = `https://${SHOP_URL}`; 
+    
+    try {
+        const { code } = req.query;
+        if (!code) return res.redirect(`${redirectBase}/?error=auth_cancelled`);
+
+        const { tokens } = await googleClient.getToken(code);
+        googleClient.setCredentials(tokens);
+        
+        const ticket = await googleClient.verifyIdToken({
+            idToken: tokens.id_token,
+            audience: GOOGLE_CLIENT_ID
+        });
+        const payload = ticket.getPayload();
+        const { email, given_name: firstName, family_name: lastName } = payload;
+
+        // Check Existence
+        const existingCustomer = await findCustomerByEmail(email);
+
+        if (existingCustomer) {
+            // LOGIN EXISTING USER (Only if they have "social-user" tag)
+            const tags = Array.isArray(existingCustomer.tags) ? existingCustomer.tags : existingCustomer.tags.split(',').map(t => t.trim());
+            
+            if (tags.includes('social-user')) {
+                const tempPassword = generateSecurePassword();
+                await updateCustomerPassword(existingCustomer.id, tempPassword);
+                const token = createSimpleToken(email, tempPassword);
+                // Redirect to Home with Token
+                return res.redirect(`${redirectBase}/?token=${token}`);
+            } else {
+                return res.redirect(`${redirectBase}/?error=manual_login_required`);
+            }
+        } else {
+            // NEW USER -> REDIRECT TO REGISTRATION FORM
+            const sig = generateSignature(email);
+            const params = new URLSearchParams({
+                action: 'social_register', // Frontend listens for this
+                email: email,
+                fname: firstName || '',
+                lname: lastName || '',
+                sig: sig
+            });
+            return res.redirect(`${redirectBase}/?${params.toString()}`);
+        }
+
+    } catch (error) {
+        console.error("Auth Error:", error.message);
+        res.redirect(`${redirectBase}/?error=system_error`);
+    }
+});
+
+// ROUTE 5: COMPLETE SOCIAL SIGNUP
+app.post('/api/complete-social-signup', async (req, res) => {
+    try {
+        const { email, firstName, lastName, phone, dob, title, marketing, sig } = req.body;
+
+        // Security Check
+        if (sig !== generateSignature(email)) {
+            return res.status(403).json({ error: 'Security verification failed.' });
+        }
+
+        const existing = await findCustomerByEmail(email);
+        if (existing) return res.status(400).json({ error: 'Account already exists.' });
+
+        const password = generateSecurePassword();
+        const marketingConsent = marketing === true || marketing === 'on';
+        
+        // Prepare Note (Matches Webhook Logic)
+        const noteString = `Title: ${title}\nDate of Birth: ${dob}\nPhone: ${phone}\nMarketing: ${marketingConsent ? "Yes" : "No"}`;
+
+        // Create Customer
+        await axios.post(`https://${SHOP_URL}/admin/api/2024-01/customers.json`, {
+            customer: {
+                first_name: firstName,
+                last_name: lastName,
+                email: email,
+                phone: phone, 
+                password: password,
+                password_confirmation: password,
+                tags: "social-user",
+                note: noteString,
+                verified_email: true,
+                send_email_welcome: false,
+                accepts_marketing: marketingConsent
+            }
+        }, {
+            headers: { 'X-Shopify-Access-Token': ACCESS_TOKEN, 'Content-Type': 'application/json' }
+        });
+
+        const token = createSimpleToken(email, password);
+        res.json({ success: true, token: token });
+
+    } catch (error) {
+        console.error("Signup Error:", error.response?.data || error.message);
+        const errMsg = error.response?.data?.errors ? JSON.stringify(error.response.data.errors) : 'Creation failed';
+        res.status(400).json({ error: errMsg });
+    }
+});
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
