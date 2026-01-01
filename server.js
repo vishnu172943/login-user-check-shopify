@@ -411,34 +411,75 @@ function getDailyPassword(email) {
 }
 
 // 2. CHECK LOGIN STATUS (The Optimization)
+// async function checkShopifyLogin(email, password) {
+//     const loginMutation = `
+//         mutation customerAccessTokenCreate($input: CustomerAccessTokenCreateInput!) {
+//           customerAccessTokenCreate(input: $input) {
+//             customerAccessToken { accessToken }
+//           }
+//         }
+//     `;
+
+//     try {
+//         const response = await axios.post(`https://${SHOP_URL}/api/2025-10/graphql.json`, {
+//             query: loginMutation,
+//             variables: { input: { email, password } }
+//         }, {
+//             headers: { 
+//                 'Content-Type': 'application/json',
+//                 // Use Storefront Token (Read-Only) not Admin Token
+//                 'X-Shopify-Storefront-Access-Token': STOREFRONT_ACCESS_TOKEN
+//             }
+//         });
+        
+//         // If we get a token back, the password is valid
+//         return !!response.data?.data?.customerAccessTokenCreate?.customerAccessToken;
+//     } catch (e) {
+//         return false;
+//     }
+// }
+// REPLACE your current checkShopifyLogin with this version
 async function checkShopifyLogin(email, password) {
     const loginMutation = `
         mutation customerAccessTokenCreate($input: CustomerAccessTokenCreateInput!) {
           customerAccessTokenCreate(input: $input) {
             customerAccessToken { accessToken }
+            customerUserErrors { message }
           }
         }
     `;
 
     try {
+        console.log("🔍 Testing Password for:", email); // DEBUG LOG 1
+        
         const response = await axios.post(`https://${SHOP_URL}/api/2025-10/graphql.json`, {
             query: loginMutation,
             variables: { input: { email, password } }
         }, {
             headers: { 
                 'Content-Type': 'application/json',
-                // Use Storefront Token (Read-Only) not Admin Token
-                'X-Shopify-Storefront-Access-Token': STOREFRONT_ACCESS_TOKEN
+                'X-Shopify-Storefront-Access-Token': STOREFRONT_ACCESS_TOKEN 
             }
         });
         
-        // If we get a token back, the password is valid
-        return !!response.data?.data?.customerAccessTokenCreate?.customerAccessToken;
+        // DEBUG LOG 2: Check what Shopify actually said
+        const data = response.data?.data?.customerAccessTokenCreate;
+        console.log("🔍 Shopify Reply:", JSON.stringify(data));
+
+        if (data?.customerUserErrors?.length > 0) {
+            console.log("❌ Shopify User Error:", data.customerUserErrors[0].message);
+        }
+
+        return !!data?.customerAccessToken;
     } catch (e) {
+        // DEBUG LOG 3: Check Network/System Errors
+        console.error("❌ API Call Failed:", e.message);
+        if (e.response) {
+             console.error("❌ Response Data:", JSON.stringify(e.response.data));
+        }
         return false;
     }
 }
-
 // Update Customer Password (REST)
 async function updateCustomerPassword(customerId, newPassword) {
         console.log("updating password")
