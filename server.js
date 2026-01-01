@@ -398,7 +398,7 @@ async function findCustomerByEmail(email) {
 function getDailyPassword(email) {
     // Get today's date in UTC (e.g. "2024-01-02") so it's the same on every device
     const dateStr = new Date().toISOString().split('T')[0]; 
-    
+      console.log("you got daily password bro")
     // Create a hash using your Secret + Email + Date
     // This creates the SAME password for the SAME user for the SAME day
     const hash = crypto
