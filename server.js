@@ -441,6 +441,7 @@ async function checkShopifyLogin(email, password) {
 
 // Update Customer Password (REST)
 async function updateCustomerPassword(customerId, newPassword) {
+        console.log("updating password")
     const numericId = customerId.includes('/') ? customerId.split('/').pop() : customerId;
     await axios.put(`https://${SHOP_URL}/admin/api/2024-01/customers/${numericId}.json`, {
         customer: {
