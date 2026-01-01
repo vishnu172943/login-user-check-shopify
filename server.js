@@ -345,9 +345,9 @@ const limiter = rateLimit({
 // =====================================================
 
 // Generate secure password
-function generateSecurePassword() {
-    return crypto.randomBytes(12).toString('hex') + "A1!";
-}
+// function generateSecurePassword() {
+//     return crypto.randomBytes(12).toString('hex') + "A1!";
+// }
 
 // Generate Security Signature (HMAC)
 function generateSignature(email) {
