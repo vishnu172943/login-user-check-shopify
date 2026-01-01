@@ -317,6 +317,8 @@ const ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_TOKEN;
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const CALLBACK_URL = process.env.CALLBACK_URL;
+const STOREFRONT_ACCESS_TOKEN = process.env.SHOPIFY_STOREFRONT_TOKEN; // NEW: Needed to verify login
+const PASSWORD_SECRET = process.env.PASSWORD_ROTATION_SECRET; // NEW: The secret key for daily passwords
 
 // Initialize Google Client
 const googleClient = new OAuth2Client(
@@ -390,6 +392,50 @@ async function findCustomerByEmail(email) {
     } catch (error) {
         console.error("GraphQL Error:", error.message);
         return null;
+    }
+}
+// 1. DETERMINISTIC PASSWORD GENERATOR (The Fix)
+function getDailyPassword(email) {
+    // Get today's date in UTC (e.g. "2024-01-02") so it's the same on every device
+    const dateStr = new Date().toISOString().split('T')[0]; 
+    
+    // Create a hash using your Secret + Email + Date
+    // This creates the SAME password for the SAME user for the SAME day
+    const hash = crypto
+        .createHmac('sha256', PASSWORD_SECRET)
+        .update(email + dateStr)
+        .digest('hex')
+        .substring(0, 16);
+
+    return `A1!${hash}`; // Add 'A1!' to meet Shopify's strength requirements
+}
+
+// 2. CHECK LOGIN STATUS (The Optimization)
+async function checkShopifyLogin(email, password) {
+    const loginMutation = `
+        mutation customerAccessTokenCreate($input: CustomerAccessTokenCreateInput!) {
+          customerAccessTokenCreate(input: $input) {
+            customerAccessToken { accessToken }
+          }
+        }
+    `;
+
+    try {
+        const response = await axios.post(`https://${SHOP_URL}/api/2025-10/graphql.json`, {
+            query: loginMutation,
+            variables: { input: { email, password } }
+        }, {
+            headers: { 
+                'Content-Type': 'application/json',
+                // Use Storefront Token (Read-Only) not Admin Token
+                'X-Shopify-Storefront-Access-Token': STOREFRONT_ACCESS_TOKEN
+            }
+        });
+        
+        // If we get a token back, the password is valid
+        return !!response.data?.data?.customerAccessTokenCreate?.customerAccessToken;
+    } catch (e) {
+        return false;
     }
 }
 
@@ -566,10 +612,29 @@ app.get('/auth/google/callback', async (req, res) => {
             // LOGIN EXISTING
             const tags = Array.isArray(existingCustomer.tags) ? existingCustomer.tags : existingCustomer.tags.split(',').map(t => t.trim());
             if (tags.includes('social-user')) {
-                const tempPassword = generateSecurePassword();
-                await updateCustomerPassword(existingCustomer.id, tempPassword);
-                const token = createSimpleToken(email, tempPassword);
-                return res.redirect(`${redirectBase}/?token=${token}`);
+                // const tempPassword = generateSecurePassword();
+                // await updateCustomerPassword(existingCustomer.id, tempPassword);
+                // const token = createSimpleToken(email, tempPassword);
+                // return res.redirect(`${redirectBase}/?token=${token}`);
+                    // NEW CODE
+// 1. Calculate what the password *should* be for today
+              const dailyPassword = getDailyPassword(email);
+
+// 2. Check if Shopify already has this password active
+// This prevents the "Ping-Pong" effect. If valid, we SKIP the update.
+             const isValid = await checkShopifyLogin(email, dailyPassword);
+
+            if (isValid) {
+                  console.log(`✅ Session Valid for ${email}. Skipping write.`);
+             } else {
+              console.log(`🔄 New Day or Stale Password. Updating password for ${email}...`);
+    // 3. Only update if it's a new day (or first login of the day)
+                await updateCustomerPassword(existingCustomer.id, dailyPassword);
+              }
+
+// 4. Return the token for Ghost Login
+const token = createSimpleToken(email, dailyPassword);
+return res.redirect(`${redirectBase}/?token=${token}`);
             } else {
                 // return res.redirect(`${redirectBase}/?error=manual_login_required`);
                     const errorScript = `
@@ -614,7 +679,7 @@ app.post('/api/complete-social-signup', async (req, res) => {
         const existing = await findCustomerByEmail(email);
         if (existing) return res.status(400).json({ error: 'Account already exists.' });
 
-        const password = generateSecurePassword();
+        const password = getDailyPassword(email);
         const marketingConsent = marketing === true || marketing === 'on';
         const noteString = `Title: ${title}\nDate of Birth: ${dob}\nPhone: ${phone}\nMarketing: ${marketingConsent ? "Yes" : "No"}`;
 
