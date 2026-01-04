@@ -645,7 +645,7 @@ app.get('/auth/google', (req, res) => {
 
 // ROUTE 4: GOOGLE CALLBACK
 app.get('/auth/google/callback', async (req, res) => {
-    const redirectBase = `https://${SHOP_URL}/account`; 
+    const redirectBase = `https://${SHOP_URL}`; 
     
     try {
         const { code } = req.query;
