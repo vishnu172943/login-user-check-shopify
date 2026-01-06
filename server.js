@@ -3,36 +3,33 @@ const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
-// --- NEW IMPORTS FOR SOCIAL LOGIN ---
 const { OAuth2Client } = require('google-auth-library');
 const crypto = require('crypto');
 
 const app = express();
 
-// =====================================================
-// 1. CONFIGURATION
-// =====================================================
-const SHOP_URL = process.env.SHOPIFY_STORE_URL; // e.g. tumi-australia-uat.myshopify.com
+/* * CONFIGURATION & MIDDLEWARE
+ * Sets up environment variables, Google Client, and Express middleware.
+ * Rate limiting is applied to prevent brute-force attacks on check/login endpoints.
+ */
+const SHOP_URL = process.env.SHOPIFY_STORE_URL;
 const ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_TOKEN;
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const CALLBACK_URL = process.env.CALLBACK_URL;
-const STOREFRONT_ACCESS_TOKEN = process.env.SHOPIFY_STOREFRONT_TOKEN; // NEW: Needed to verify login
-const PASSWORD_SECRET = process.env.PASSWORD_ROTATION_SECRET; // NEW: The secret key for daily passwords
+const STOREFRONT_ACCESS_TOKEN = process.env.SHOPIFY_STOREFRONT_TOKEN;
+const PASSWORD_SECRET = process.env.PASSWORD_ROTATION_SECRET;
 
-// Initialize Google Client
 const googleClient = new OAuth2Client(
     GOOGLE_CLIENT_ID,
     GOOGLE_CLIENT_SECRET,
     CALLBACK_URL
 );
 
-// 2. MIDDLEWARE
 app.use(cors({ origin: '*' })); 
 app.use(express.json());
 app.set('trust proxy', 1);
 
-// Rate Limiter
 const limiter = rateLimit({
     windowMs: 30 * 60 * 1000, 
     max: 9, 
@@ -40,16 +37,11 @@ const limiter = rateLimit({
     keyGenerator: (req) => ipKeyGenerator(req) + "_" + (req.body.email || '')
 });
 
-// =====================================================
-// 3. HELPER FUNCTIONS (CRITICAL FOR SOCIAL LOGIN)
-// =====================================================
-
-// Generate secure password
-// function generateSecurePassword() {
-//     return crypto.randomBytes(12).toString('hex') + "A1!";
-// }
-
-// Generate Security Signature (HMAC)
+/* * HELPER: SIGNATURE GENERATOR
+ * Creates a cryptographic HMAC signature based on the email. 
+ * This is passed to the frontend and verified later to ensure the 'complete-signup' request 
+ * actually came from a valid Google Auth success, preventing spoofing.
+ */
 function generateSignature(email) {
     return crypto
         .createHmac('sha256', GOOGLE_CLIENT_SECRET)
@@ -57,13 +49,20 @@ function generateSignature(email) {
         .digest('hex');
 }
 
-// Create simple token
+/* * HELPER: TOKEN GENERATOR
+ * Encodes the email and password into a base64 string.
+ * This allows the frontend to decode it and perform a "ghost login" (form submission) 
+ * immediately after the social auth flow completes.
+ */
 function createSimpleToken(email, password) {
     const data = JSON.stringify({ email, password });
     return Buffer.from(data).toString('base64');
 }
 
-// Find Customer by Email (GraphQL)
+/* * HELPER: FIND CUSTOMER (ADMIN API)
+ * Queries Shopify Admin GraphQL to check if a user exists.
+ * We need the ID and Tags to determine if the user is a 'social-user' or a standard email user.
+ */
 async function findCustomerByEmail(email) {
     const query = `
         query getCustomer($query: String!) {
@@ -94,26 +93,14 @@ async function findCustomerByEmail(email) {
         return null;
     }
 }
-// 1. DETERMINISTIC PASSWORD GENERATOR (The Fix)
-// function getDailyPassword(email) {
-//     // Get today's date in UTC (e.g. "2024-01-02") so it's the same on every device
-//     // const dateStr = new Date().toISOString().split('T')[0]; 
-//       console.log("you got daily password bro")
-//     // Create a hash using your Secret + Email + Date
-//     // This creates the SAME password for the SAME user for the SAME day
-//     const hash = crypto
-//         .createHmac('sha256', PASSWORD_SECRET)
-//         .update(email)
-//         .digest('hex')
-//         .substring(0, 16);
 
-//     return `A1!${hash}`; // Add 'A1!' to meet Shopify's strength requirements
-// }
+/* * HELPER: DETERMINISTIC PASSWORD GENERATOR
+ * Generates a secure password based on the Email + Server Secret.
+ * This ensures that every time a specific Google user logs in, we generate the 
+ * exact same password, allowing them to authenticate with Shopify without storing the password.
+ */
 function getSocialPassword(email) {
-    // 1. Safety Check: Normalize the email so 'User@Test.com' matches 'user@test.com'
     const normalizedEmail = email.toLowerCase().trim();
-
-    // 2. Generate Hash: Only depends on Email + Secret
     const hash = crypto
         .createHmac('sha256', PASSWORD_SECRET)
         .update(normalizedEmail) 
@@ -123,34 +110,11 @@ function getSocialPassword(email) {
     return `A1!${hash}`; 
 }
 
-// 2. CHECK LOGIN STATUS (The Optimization)
-// async function checkShopifyLogin(email, password) {
-//     const loginMutation = `
-//         mutation customerAccessTokenCreate($input: CustomerAccessTokenCreateInput!) {
-//           customerAccessTokenCreate(input: $input) {
-//             customerAccessToken { accessToken }
-//           }
-//         }
-//     `;
-
-//     try {
-//         const response = await axios.post(`https://${SHOP_URL}/api/2025-10/graphql.json`, {
-//             query: loginMutation,
-//             variables: { input: { email, password } }
-//         }, {
-//             headers: { 
-//                 'Content-Type': 'application/json',
-//                 // Use Storefront Token (Read-Only) not Admin Token
-//                 'X-Shopify-Storefront-Access-Token': STOREFRONT_ACCESS_TOKEN
-//             }
-//         });
-        
-//         // If we get a token back, the password is valid
-//         return !!response.data?.data?.customerAccessTokenCreate?.customerAccessToken;
-//     } catch (e) {
-//         return false;
-//     }
-// }
+/* * HELPER: CHECK LOGIN (STOREFRONT API)
+ * Optimization Step: Tries to log in using the generated social password via Storefront API.
+ * If this succeeds, we know the password in Shopify is already correct, so we skip 
+ * the Admin API write operation (saving API rate limits).
+ */
  async function checkShopifyLogin(email, password) {
     const loginMutation = `
         mutation customerAccessTokenCreate($input: CustomerAccessTokenCreateInput!) {
@@ -162,8 +126,6 @@ function getSocialPassword(email) {
     `;
 
     try {
-        console.log("🔍 Testing Password for:", email); // DEBUG LOG 1
-        
         const response = await axios.post(`https://${SHOP_URL}/api/2025-10/graphql.json`, {
             query: loginMutation,
             variables: { input: { email, password } }
@@ -174,27 +136,19 @@ function getSocialPassword(email) {
             }
         });
         
-        // DEBUG LOG 2: Check what Shopify actually said
         const data = response.data?.data?.customerAccessTokenCreate;
-        console.log("🔍 Shopify Reply:", JSON.stringify(data));
-
-        if (data?.customerUserErrors?.length > 0) {
-            console.log("❌ Shopify User Error:", data.customerUserErrors[0].message);
-        }
-
         return !!data?.customerAccessToken;
     } catch (e) {
-        // DEBUG LOG 3: Check Network/System Errors
-        console.error("❌ API Call Failed:", e.message);
-        if (e.response) {
-             console.error("❌ Response Data:", JSON.stringify(e.response.data));
-        }
         return false;
     }
 }
-// Update Customer Password (REST)
+
+/* * HELPER: UPDATE PASSWORD (ADMIN API)
+ * Uses the Admin REST API to force-update a customer's password.
+ * This is called if 'checkShopifyLogin' fails, ensuring the user's Shopify account 
+ * matches the deterministic social password.
+ */
 async function updateCustomerPassword(customerId, newPassword) {
-        console.log("updating password")
     const numericId = customerId.includes('/') ? customerId.split('/').pop() : customerId;
     await axios.put(`https://${SHOP_URL}/admin/api/2024-01/customers/${numericId}.json`, {
         customer: {
@@ -207,45 +161,21 @@ async function updateCustomerPassword(customerId, newPassword) {
     });
 }
 
-// =====================================================
-// 4. ROUTES
-// =====================================================
-
-// ROUTE 1: CHECK EMAIL
-// app.post('/api/check-user', limiter, async (req, res) => {
-//     const { email } = req.body;
-//     if (!email) return res.status(400).json({ error: "Email is required" });
-
-//     try {
-//         console.log(`Checking email: ${email}...`);
-//         const user = await findCustomerByEmail(email); // Re-using helper!
-//         const userExists = !!user;
-
-//         return res.json({ 
-//             exists: userExists,
-//             message: userExists ? "User found" : "User not found"
-//         });
-//     } catch (error) {
-//         console.error("Shopify API Error:", error.message);
-//         return res.status(500).json({ error: "Internal Server Error" });
-//     }
-// });
-// =====================================================
-// ROUTE 1: CHECK EMAIL (UPDATED FOR SOCIAL TAG)
-// =====================================================
+/* * ENDPOINT: CHECK USER STATUS
+ * Called by frontend to determine if it should show the Login or Register UI.
+ * Returns 'isSocial' so the frontend knows if it should force a Google login 
+ * or allow standard password entry.
+ */
 app.post('/api/check-user', limiter, async (req, res) => {
     const { email } = req.body;
     if (!email) return res.status(400).json({ error: "Email is required" });
 
     try {
-        console.log(`Checking email: ${email}...`);
         const user = await findCustomerByEmail(email);
         const userExists = !!user;
         let isSocial = false;
 
-        // CHECK TAGS IF USER EXISTS
         if (userExists && user.tags) {
-            // Normalize tags (Handle if it comes as Array or String)
             const tags = Array.isArray(user.tags) 
                 ? user.tags 
                 : user.tags.split(',').map(t => t.trim());
@@ -257,24 +187,25 @@ app.post('/api/check-user', limiter, async (req, res) => {
 
         return res.json({ 
             exists: userExists,
-            isSocial: isSocial, // <--- New Flag sent to Frontend
+            isSocial: isSocial, 
             message: userExists ? "User found" : "User not found"
         });
 
     } catch (error) {
-        console.error("Shopify API Error:", error.message);
         return res.status(500).json({ error: "Internal Server Error" });
     }
 });
 
-// ROUTE 2: WEBHOOK LISTENER
+/* * ENDPOINT: WEBHOOK LISTENER
+ * Listens for 'customer/create' webhooks from Shopify.
+ * Parses the customer 'note' field to extract data (Phone, DOB) that couldn't be 
+ * handled by the standard registration form, and updates the customer record accordingly.
+ */
 app.post('/api/webhooks/customer-create', async (req, res) => {
     res.status(200).send('Webhook received');
     const customer = req.body;
     const customerId = customer.id;
     const rawNote = customer.note || "";
-
-    console.log(`🔍 Processing Customer ${customerId}`);
 
     let phoneNumber = null;
     let shouldSubscribe = false;
@@ -325,14 +256,15 @@ app.post('/api/webhooks/customer-create', async (req, res) => {
             await axios.put(`https://${SHOP_URL}/admin/api/2024-01/customers/${customerId}.json`, updatePayload, {
                 headers: { 'X-Shopify-Access-Token': ACCESS_TOKEN, 'Content-Type': 'application/json' }
             });
-            console.log(`✅ Success! Customer updated.`);
         } catch (error) {
-            console.error("❌ Update Failed:", error.response?.data || error.message);
+            console.error("Update Failed:", error.response?.data || error.message);
         }
     }
 });
 
-// ROUTE 3: START GOOGLE OAUTH
+/* * ENDPOINT: START GOOGLE OAUTH
+ * Redirects the user to the Google Consent screen.
+ */
 app.get('/auth/google', (req, res) => {
     const authorizeUrl = googleClient.generateAuthUrl({
         access_type: 'offline',
@@ -342,7 +274,14 @@ app.get('/auth/google', (req, res) => {
     res.redirect(authorizeUrl);
 });
 
-// ROUTE 4: GOOGLE CALLBACK
+/* * ENDPOINT: GOOGLE OAUTH CALLBACK
+ * Handles the code returned from Google. 
+ * 1. Verifies Google identity.
+ * 2. Checks if user exists in Shopify.
+ * 3. IF EXISTING SOCIAL: Syncs password if needed, returns login token.
+ * 4. IF EXISTING MANUAL: Blocks login, tells user to use password form.
+ * 5. IF NEW: Redirects to frontend to complete signup (phone/dob collection).
+ */
 app.get('/auth/google/callback', async (req, res) => {
     const redirectBase = `https://${SHOP_URL}`; 
     
@@ -363,35 +302,26 @@ app.get('/auth/google/callback', async (req, res) => {
         const existingCustomer = await findCustomerByEmail(email);
 
         if (existingCustomer) {
-            // LOGIN EXISTING
+            // EXISTING USER LOGIC
             const tags = Array.isArray(existingCustomer.tags) ? existingCustomer.tags : existingCustomer.tags.split(',').map(t => t.trim());
             if (tags.includes('social-user')) {
-                // const tempPassword = generateSecurePassword();
-                // await updateCustomerPassword(existingCustomer.id, tempPassword);
-                // const token = createSimpleToken(email, tempPassword);
-                // return res.redirect(`${redirectBase}/?token=${token}`);
-                    // NEW CODE
-// 1. Calculate what the password *should* be for today
-              const socialPassword = getSocialPassword(email);
+                // Determine what the password should be
+                const socialPassword = getSocialPassword(email);
 
-// 2. Check if Shopify already has this password active
-// This prevents the "Ping-Pong" effect. If valid, we SKIP the update.
-             const isValid = await checkShopifyLogin(email, socialPassword);
+                // Check if that password currently works (Optimization)
+                const isValid = await checkShopifyLogin(email, socialPassword);
 
-            if (isValid) {
-                  console.log(`✅ Session Valid for ${email}. Skipping write.`);
-             } else {
-              console.log(`🔄 New Day or Stale Password. Updating password for ${email}...`);
-    // 3. Only update if it's a new day (or first login of the day)
-                await updateCustomerPassword(existingCustomer.id,socialPassword);
-              }
+                if (!isValid) {
+                   // If stale, update it via Admin API
+                    await updateCustomerPassword(existingCustomer.id, socialPassword);
+                }
 
-// 4. Return the token for Ghost Login
-const token = createSimpleToken(email, socialPassword);
-return res.redirect(`${redirectBase}/?token=${token}`);
+                // Generate login token and redirect
+                const token = createSimpleToken(email, socialPassword);
+                return res.redirect(`${redirectBase}/?token=${token}`);
             } else {
-                // return res.redirect(`${redirectBase}/?error=manual_login_required`);
-                    const errorScript = `
+                // User has an account but it's NOT a social account. Block access.
+                 const errorScript = `
                   <script>
                     window.opener.postMessage({ 
                       error: 'manual_login', 
@@ -403,7 +333,7 @@ return res.redirect(`${redirectBase}/?token=${token}`);
                 return res.send(errorScript);
             }
         } else {
-            // REGISTER NEW
+            // NEW USER LOGIC
             const sig = generateSignature(email);
             const params = new URLSearchParams({
                 action: 'social_register',
@@ -421,11 +351,16 @@ return res.redirect(`${redirectBase}/?token=${token}`);
     }
 });
 
-// ROUTE 5: COMPLETE SIGNUP
+/* * ENDPOINT: COMPLETE SOCIAL SIGNUP
+ * Finalizes the creation of a new social user.
+ * Verifies the signature (security), creates the customer in Shopify with the 
+ * deterministic password and 'social-user' tag, and returns the login token.
+ */
 app.post('/api/complete-social-signup', async (req, res) => {
     try {
         const { email, firstName, lastName, phone, dob, title, marketing, sig } = req.body;
 
+        // Security Check: Ensure email wasn't tampered with
         if (sig !== generateSignature(email)) {
             return res.status(403).json({ error: 'Security verification failed.' });
         }
@@ -437,6 +372,7 @@ app.post('/api/complete-social-signup', async (req, res) => {
         const marketingConsent = marketing === true || marketing === 'on';
         const noteString = `Title: ${title}\nDate of Birth: ${dob}\nPhone: ${phone}\nMarketing: ${marketingConsent ? "Yes" : "No"}`;
 
+        // Create Customer in Shopify
         await axios.post(`https://${SHOP_URL}/admin/api/2024-01/customers.json`, {
             customer: {
                 first_name: firstName,
