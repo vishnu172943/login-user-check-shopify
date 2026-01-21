@@ -201,64 +201,100 @@ app.post('/api/check-user', limiter, async (req, res) => {
  * Parses the customer 'note' field to extract data (Phone, DOB) that couldn't be 
  * handled by the standard registration form, and updates the customer record accordingly.
  */
+// app.post('/api/webhooks/customer-create', async (req, res) => {
+//     res.status(200).send('Webhook received');
+//     const customer = req.body;
+//     const customerId = customer.id;
+//     const rawNote = customer.note || "";
+
+//     let phoneNumber = null;
+//     let shouldSubscribe = false;
+//     let dobValue = null;
+
+//     const noteLines = rawNote.split('\n');
+//     const cleanLines = [];
+
+//     noteLines.forEach(line => {
+//         const text = line.trim();
+//         const lowerText = text.toLowerCase();
+
+//         if (lowerText.startsWith('phone:')) {
+//             phoneNumber = text.substring(6).trim(); 
+//         } else if (lowerText.startsWith('marketing:')) {
+//             const val = text.substring(10).trim().toLowerCase();
+//             shouldSubscribe = (val === 'yes' || val === 'true');
+//         } else if (lowerText.startsWith('date of birth:') || lowerText.startsWith('dob:')) {
+//             const separatorIndex = text.indexOf(':');
+//             if (separatorIndex !== -1) dobValue = text.substring(separatorIndex + 1).trim();
+//         } else {
+//             if (text.length > 0) cleanLines.push(text);
+//         }
+//     });
+
+//     const cleanNote = cleanLines.join('\n');
+
+//     if (phoneNumber || shouldSubscribe || dobValue || cleanNote !== rawNote) {
+//         const updatePayload = { customer: { id: customerId, note: cleanNote } };
+//         if (phoneNumber) updatePayload.customer.phone = phoneNumber;
+//         if (shouldSubscribe) {
+//             updatePayload.customer.email_marketing_consent = {
+//                 state: "subscribed",
+//                 opt_in_level: "single_opt_in",
+//                 consent_updated_at: new Date().toISOString()
+//             };
+//         }
+//         if (dobValue) {
+//             updatePayload.customer.metafields = [{
+//                 namespace: "custom",
+//                 key: "date_of_birth", 
+//                 value: dobValue,
+//                 type: "single_line_text_field"
+//             }];
+//         }
+
+//         try {
+//             await axios.put(`https://${SHOP_URL}/admin/api/2024-01/customers/${customerId}.json`, updatePayload, {
+//                 headers: { 'X-Shopify-Access-Token': ACCESS_TOKEN, 'Content-Type': 'application/json' }
+//             });
+//         } catch (error) {
+//             console.error("Update Failed:", error.response?.data || error.message);
+//         }
+//     }
+// });
 app.post('/api/webhooks/customer-create', async (req, res) => {
+    // 1. Respond instantly to Shopify (prevents timeouts)
     res.status(200).send('Webhook received');
-    const customer = req.body;
-    const customerId = customer.id;
-    const rawNote = customer.note || "";
 
-    let phoneNumber = null;
-    let shouldSubscribe = false;
-    let dobValue = null;
+    const { id, note = "" } = req.body;
 
-    const noteLines = rawNote.split('\n');
-    const cleanLines = [];
+    // 2. Regex: Find "dob:" or "date of birth:" (Case insensitive, multiline)
+    const dobMatch = note.match(/^(?:date of birth|dob):\s*(.*)$/im);
 
-    noteLines.forEach(line => {
-        const text = line.trim();
-        const lowerText = text.toLowerCase();
+    // If no DOB found, stop here. No API call needed.
+    if (!dobMatch) return; 
 
-        if (lowerText.startsWith('phone:')) {
-            phoneNumber = text.substring(6).trim(); 
-        } else if (lowerText.startsWith('marketing:')) {
-            const val = text.substring(10).trim().toLowerCase();
-            shouldSubscribe = (val === 'yes' || val === 'true');
-        } else if (lowerText.startsWith('date of birth:') || lowerText.startsWith('dob:')) {
-            const separatorIndex = text.indexOf(':');
-            if (separatorIndex !== -1) dobValue = text.substring(separatorIndex + 1).trim();
-        } else {
-            if (text.length > 0) cleanLines.push(text);
-        }
-    });
+    // 3. Clean Data: Get the value and remove the line from the note
+    const dobValue = dobMatch[1].trim();
+    const cleanNote = note.replace(dobMatch[0], '').trim();
 
-    const cleanNote = cleanLines.join('\n');
-
-    if (phoneNumber || shouldSubscribe || dobValue || cleanNote !== rawNote) {
-        const updatePayload = { customer: { id: customerId, note: cleanNote } };
-        if (phoneNumber) updatePayload.customer.phone = phoneNumber;
-        if (shouldSubscribe) {
-            updatePayload.customer.email_marketing_consent = {
-                state: "subscribed",
-                opt_in_level: "single_opt_in",
-                consent_updated_at: new Date().toISOString()
-            };
-        }
-        if (dobValue) {
-            updatePayload.customer.metafields = [{
-                namespace: "custom",
-                key: "date_of_birth", 
-                value: dobValue,
-                type: "single_line_text_field"
-            }];
-        }
-
-        try {
-            await axios.put(`https://${SHOP_URL}/admin/api/2024-01/customers/${customerId}.json`, updatePayload, {
-                headers: { 'X-Shopify-Access-Token': ACCESS_TOKEN, 'Content-Type': 'application/json' }
-            });
-        } catch (error) {
-            console.error("Update Failed:", error.response?.data || error.message);
-        }
+    // 4. Single API Call to update Note & Metafield
+    try {
+        await axios.put(`https://${SHOP_URL}/admin/api/2024-01/customers/${id}.json`, {
+            customer: {
+                id: id,
+                note: cleanNote, // Save the note without the DOB line
+                metafields: [{
+                    namespace: "custom",
+                    key: "date_of_birth",
+                    value: dobValue,
+                    type: "single_line_text_field"
+                }]
+            }
+        }, { headers: { 'X-Shopify-Access-Token': ACCESS_TOKEN } });
+        
+        console.log(`Updated DOB for customer ${id}`);
+    } catch (error) {
+        console.error("Update Failed:", error.message);
     }
 });
 
